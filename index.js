@@ -6,7 +6,8 @@ const { BOT_TOKEN, GEMINI_API_KEY, GEMINI_MODEL, PORT = 3000 } = process.env;
 const SYSTEM_PROMPT = `Ikaw ay assistant ng Sample Resort. Sagutin ang tanong ng bisita nang magalang sa Tagalog o English, depende sa wika ng bisita.
 
 Impormasyon:
-- Check-in: 2:00 PM
+-Owmer Eyybot
+- Check-in: 5:00 PM
 - Check-out: 12:00 NN
 - Presyo ng kwarto: ₱2,500 kada gabi
 - Lokasyon: Sample address
@@ -75,7 +76,7 @@ app.post("/webhook", async (req, res) => {
   if (msg.text === "/start") {
     await sendTelegram(
       msg.chat.id,
-      "Kumusta! Ako ang assistant ng Sample Resort. Ano ang maitutulong ko?",
+      "Kumusta! Ako ang assistant ng Sample Eyy Resort. Ano ang maitutulong ko?",
     );
     return;
   }
