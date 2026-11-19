@@ -1,88 +1,128 @@
-import "dotenv/config";
-import express from "express";
+const SECRET = "ilagay-dito-ang-mahabang-random-na-text";
+const ROOMS = 3; // ilang kwarto ang pwedeng ibenta kada gabi
+const SHEET_NAME = "Bookings";
+const CALENDAR_NAME = "Resort Bookings";
 
-const { BOT_TOKEN, GEMINI_API_KEY, GEMINI_MODEL, PORT = 3000 } = process.env;
+function getCalendar_() {
+  const found = CalendarApp.getCalendarsByName(CALENDAR_NAME);
+  return found.length ? found[0] : CalendarApp.createCalendar(CALENDAR_NAME);
+}
 
-const SYSTEM_PROMPT = `Ikaw ay assistant ng Sample Resort. Sagutin ang tanong ng bisita nang magalang sa Tagalog o English, depende sa wika ng bisita.
-
-Impormasyon:
--Owmer Eyybot
-- Check-in: 5:00 PM
-- Check-out: 12:00 NN
-- Presyo ng kwarto: ₱2,500 kada gabi
-- Lokasyon: Sample address
-- Contact: 09XX XXX XXXX
-
-Sagutin lang batay sa impormasyon sa itaas. Kung wala ang sagot, sabihin na makipag-ugnayan sa staff.`;
-
-const FALLBACK = "Pasensya na, may problema sa ngayon. Subukan ulit mamaya.";
-
-const app = express();
-app.use(express.json());
-
-async function askGemini(userText) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
-
-  for (let attempt = 1; attempt <= 3; attempt++) {
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": GEMINI_API_KEY,
-        },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents: [{ role: "user", parts: [{ text: userText }] }],
-        }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        return data.candidates?.[0]?.content?.parts?.[0]?.text || FALLBACK;
-      }
-
-      console.error(`Gemini error ${res.status}:`, await res.text());
-      if (![429, 500, 503].includes(res.status)) break; // hindi na ulitin kung ibang error
-    } catch (err) {
-      console.error("Gemini fetch failed:", err.message);
-    }
-    await new Promise((r) => setTimeout(r, 2000 * attempt));
+function getSheet_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sh = ss.getSheetByName(SHEET_NAME);
+  if (!sh) {
+    sh = ss.insertSheet(SHEET_NAME);
+    sh.appendRow([
+      "Timestamp",
+      "Pangalan",
+      "Telepono",
+      "Check-in",
+      "Check-out",
+      "Bisita",
+      "Telegram chat ID",
+      "Status",
+      "Event ID",
+    ]);
   }
-  return FALLBACK;
+  return sh;
 }
 
-async function sendTelegram(chatId, text) {
-  const res = await fetch(
-    `https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text }),
-    },
-  );
-  if (!res.ok) console.error("Telegram error:", await res.text());
+function parseDate_(s) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
+  if (!m) throw new Error("Maling petsa: " + s);
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
 }
 
-app.get("/", (req, res) => res.send("Resort bot is running"));
-app.get("/healthz", (req, res) => res.json({ status: "ok" }));
+function validateRange_(checkIn, checkOut) {
+  const start = parseDate_(checkIn);
+  const end = parseDate_(checkOut);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  if (start < today) throw new Error("Lumipas na ang check-in date.");
+  if (end <= start)
+    throw new Error("Dapat mas huli ang check-out kaysa check-in.");
+  if ((end - start) / 86400000 > 30)
+    throw new Error("Hanggang 30 gabi lang ang pwede.");
+  return { start, end };
+}
 
-app.post("/webhook", async (req, res) => {
-  res.sendStatus(200); // sagutin agad ang Telegram
+function checkAvailability_(checkIn, checkOut) {
+  const { start, end } = validateRange_(checkIn, checkOut);
+  const booked = getCalendar_().getEvents(start, end).length;
+  return { available: booked < ROOMS, roomsLeft: Math.max(ROOMS - booked, 0) };
+}
 
-  const msg = req.body?.message;
-  if (!msg?.text) return;
+function createBooking_(d) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const avail = checkAvailability_(d.checkIn, d.checkOut);
+    if (!avail.available)
+      return { ok: false, error: "Wala nang bakante sa mga petsang iyon." };
 
-  if (msg.text === "/start") {
-    await sendTelegram(
-      msg.chat.id,
-      "Kumusta! Ako ang assistant ng Sample Eyy Resort. Ano ang maitutulong ko?",
+    const { start, end } = validateRange_(d.checkIn, d.checkOut);
+    const event = getCalendar_().createAllDayEvent(
+      `[Pending] ${d.name} (${d.guests} bisita)`,
+      start,
+      end,
+      { description: `Tel: ${d.phone}\nTelegram chat ID: ${d.chatId}` },
     );
-    return;
+    getSheet_().appendRow([
+      new Date(),
+      d.name,
+      d.phone,
+      d.checkIn,
+      d.checkOut,
+      d.guests,
+      d.chatId,
+      "Pending",
+      event.getId(),
+    ]);
+    return { ok: true, message: "Na-save ang booking bilang Pending." };
+  } finally {
+    lock.releaseLock();
   }
+}
 
-  const reply = await askGemini(msg.text);
-  await sendTelegram(msg.chat.id, reply);
-});
+function doPost(e) {
+  try {
+    const body = JSON.parse(e.postData.contents);
+    if (body.secret !== SECRET)
+      return json_({ ok: false, error: "unauthorized" });
+    if (body.action === "check")
+      return json_({
+        ok: true,
+        ...checkAvailability_(body.checkIn, body.checkOut),
+      });
+    if (body.action === "book") return json_(createBooking_(body));
+    return json_({ ok: false, error: "unknown action" });
+  } catch (err) {
+    return json_({ ok: false, error: String(err.message || err) });
+  }
+}
 
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(
+    ContentService.MimeType.JSON,
+  );
+}
+
+// Pang-test sa editor
+function testCheck() {
+  Logger.log(JSON.stringify(checkAvailability_("2026-12-20", "2026-12-22")));
+}
+function testBook() {
+  Logger.log(
+    JSON.stringify(
+      createBooking_({
+        name: "Test Guest",
+        phone: "09000000000",
+        checkIn: "2026-12-20",
+        checkOut: "2026-12-22",
+        guests: 2,
+        chatId: "test",
+      }),
+    ),
+  );
+}
