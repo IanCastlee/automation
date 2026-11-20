@@ -14,7 +14,7 @@ const {
 const FALLBACK = "Pasensya na, may problema sa ngayon. Subukan ulit mamaya.";
 const MAX_HISTORY = 12;
 const MAX_TOOL_STEPS = 5;
-const MAX_BOOKINGS_PER_CHAT_PER_DAY = 3;
+const MAX_BOOKINGS_PER_CHAT_PER_DAY = 10;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 for (const [k, v] of Object.entries({
